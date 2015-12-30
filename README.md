@@ -1,2 +1,2 @@
 # kspider
-General distributed spider in Go
+General distributed Spider in Go
