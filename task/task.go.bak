@@ -1,0 +1,184 @@
+package task
+
+import (
+	"container/list"
+	"encoding/gob"
+	"log"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/go-xorm/xorm"
+	_ "github.com/mattn/go-sqlite3"
+)
+
+const (
+	TaskStatusTodo = iota
+	TaskStatusDoing
+	TaskStatusDone
+	TaskStatusFail
+)
+
+type Task struct {
+	Id        int
+	RootId    int
+	Site      string
+	Url       string
+	Referer   string
+	Status    int
+	Retries   int
+	CreatedAt time.Time
+}
+
+type Result struct {
+	Id      int64
+	Success bool
+	Retry   bool
+	Result  string
+}
+
+type TaskManager struct {
+	mu        sync.RWMutex
+	fd        *os.File
+	MaxId     int64
+	AllTasks  map[int64]*Task
+	todoQueue *list.List
+	doneQueue *list.List
+}
+
+func NewTaskManager() *TaskManager {
+	heap.Init()
+	fd, err := os.OpenFile("./task.gob", os.O_RDWR|os.O_CREATE, 666)
+	if err != nil {
+		log.Printf("open file error: %s", err)
+		return nil
+	}
+
+	taskMgr := &TaskManager{
+		fd:        fd,
+		MaxId:     0,
+		AllTasks:  make(map[int64]*Task),
+		todoQueue: list.New(),
+		doneQueue: list.New(),
+	}
+
+	stat, _ := fd.Stat()
+	if stat.Size() > 0 {
+		decoder := gob.NewDecoder(fd)
+		err = decoder.Decode(&taskMgr.AllTasks)
+		if err != nil {
+			log.Printf("decode error: %s", err)
+			return nil
+		}
+
+		for _, task := range taskMgr.AllTasks {
+			if task.Id > taskMgr.MaxId {
+				taskMgr.MaxId = task.Id
+			}
+
+			if task.Status == TaskStatusTodo {
+				taskMgr.todoQueue.PushBack(task)
+			} else if task.Status == TaskStatusDone {
+				taskMgr.doneQueue.PushBack(task)
+			}
+		}
+	}
+
+	return taskMgr
+}
+
+func (tm *TaskManager) getNextId() int64 {
+	return atomic.AddInt64(&tm.MaxId, 1)
+}
+
+func (tm *TaskManager) Add(task *Task) bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	tm.AllTasks[task.Id] = task
+	tm.todoQueue.PushBack(task)
+	return true
+}
+
+func (tm *TaskManager) Create(name string, data string) *Task {
+	task := &Task{
+		Id:      tm.getNextId(),
+		Name:    name,
+		Data:    data,
+		Status:  TaskStatusTodo,
+		Retries: 0,
+	}
+
+	tm.Add(task)
+	return task
+}
+
+func (tm *TaskManager) Retry(task *Task) bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if _, ok := tm.AllTasks[task.Id]; !ok {
+		return false
+	}
+
+	if task.Status != TaskStatusDoing {
+		return false
+	}
+
+	if task.Retries > 3 {
+		task.Status = TaskStatusFail
+		return false
+	}
+
+	task.Retries += 1
+	task.Status = TaskStatusTodo
+	tm.todoQueue.PushBack(task)
+	return true
+}
+
+func (tm *TaskManager) Pop() *Task {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	e := tm.todoQueue.Front()
+	if e == nil {
+		return nil
+	}
+	tm.todoQueue.Remove(e)
+
+	task, _ := e.Value.(*Task)
+	task.Status = TaskStatusDoing
+
+	time.AfterFunc(task.Timeout, func() {
+		tm.Retry(task)
+	})
+	return task
+}
+
+func (tm *TaskManager) Done(result *Result) bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	task, ok := tm.AllTasks[result.Id]
+	if !ok {
+		return false
+	}
+
+	if task.Status != TaskStatusDoing {
+		return false
+	}
+
+	task.Status = TaskStatusDone
+	tm.doneQueue.PushBack(task)
+	return true
+}
+
+func (tm *TaskManager) Save() error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	tm.fd.Seek(0, 0)
+	encoder := gob.NewEncoder(tm.fd)
+	return encoder.Encode(&tm.AllTasks)
+}

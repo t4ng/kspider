@@ -1,26 +1,26 @@
 package rchan
 
 import (
-	"time"
-	"os"
-	"net"
 	"log"
+	"net"
+	"os"
+	"time"
 )
 
 type Client struct {
 	serverAddr string
-	session *Session
-	logger *log.Logger
-	SendCh chan []byte
-	RecvCh chan []byte
+	session    *Session
+	logger     *log.Logger
+	SendCh     chan []byte
+	RecvCh     chan []byte
 }
 
 func NewClient(serverAddr string, bufSize int) *Client {
-	return &Client {
+	return &Client{
 		serverAddr: serverAddr,
-		logger: log.New(os.Stderr, "", log.LstdFlags | log.Lshortfile),
-		SendCh: make(chan []byte, bufSize),
-		RecvCh: make(chan []byte, bufSize),
+		logger:     log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile),
+		SendCh:     make(chan []byte, bufSize),
+		RecvCh:     make(chan []byte, bufSize),
 	}
 }
 
@@ -30,7 +30,7 @@ func (c *Client) Connect() error {
 		c.logger.Printf("connect to %s error: %s", c.serverAddr, err)
 		return err
 	}
-	
+
 	c.session = NewSession(conn)
 	go c.recvLoop()
 	go c.sendLoop()
@@ -46,7 +46,7 @@ func (c *Client) reconnect() {
 		}
 
 		c.logger.Printf("reconnect to %s error: %s", c.serverAddr, err)
-		time.Sleep(5*time.Second)
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -67,19 +67,19 @@ func (c *Client) recvLoop() {
 			c.reconnect()
 			continue
 		}
-		
+
 		c.RecvCh <- buf[:length]
 	}
 }
 
 func (c *Client) sendLoop() {
 	for {
-		data := <- c.SendCh
+		data := <-c.SendCh
 		_, err := c.session.Send(data)
 		if err != nil {
 			c.logger.Printf("send to %s error: %s", c.serverAddr, err)
 			c.SendCh <- data
-			time.Sleep(1*time.Second)
+			time.Sleep(1 * time.Second)
 			continue
 		}
 	}

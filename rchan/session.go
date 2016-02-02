@@ -7,8 +7,9 @@ import (
 )
 
 type Session struct {
-	mu   sync.Mutex
-	conn net.Conn
+	mu     sync.Mutex
+	conn   net.Conn
+	closed bool
 }
 
 type SessionMgr struct {
@@ -37,6 +38,7 @@ func (s *Session) Recv(buf []byte) (length int, err error) {
 
 func (s *Session) Close() {
 	s.conn.Close()
+	s.closed = true
 }
 
 func (s *Session) LocalAddr() string {
@@ -56,7 +58,11 @@ func NewSessionMgr() *SessionMgr {
 func (m *SessionMgr) Get(key string) *Session {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	session, _ := m.sessionMap[key]
+	session, ok := m.sessionMap[key]
+	if ok && session != nil && session.closed {
+		delete(m.sessionMap, key)
+		return nil
+	}
 	return session
 }
 
